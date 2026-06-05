@@ -68,12 +68,34 @@ class PlgSystemNextguard extends CMSPlugin
     // ── Device Authorization Flow ────────────────────────────────────────────
 
     /**
+     * Security gate for the device-auth handlers.
+     *
+     * These run through the PUBLIC com_ajax endpoint and write the API key /
+     * device token / project ID to the plugin params. Without this check an
+     * unauthenticated visitor could overwrite the site's credentials and bind it
+     * to an attacker-controlled NextGuard project (info disclosure of the
+     * installed-extension inventory + integration hijack). Restrict to logged-in
+     * Joomla administrators.
+     */
+    private function requireAdmin(): bool
+    {
+        $user = Factory::getApplication()->getIdentity();
+        return $user && !$user->guest && $user->authorise('core.admin');
+    }
+
+    /**
      * AJAX handler: request an activation code from NextGuard.
      * Called via: index.php?option=com_ajax&plugin=nextguard&group=system&ng_task=request_code&api_key=...
      */
     private function ajaxRequestCode(): void
     {
         $app    = Factory::getApplication();
+
+        if (!$this->requireAdmin()) {
+            echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+            $app->close(); return;
+        }
+
         $apiKey = trim($app->input->get('api_key', '', 'string'));
 
         if (empty($apiKey)) {
@@ -120,6 +142,12 @@ class PlgSystemNextguard extends CMSPlugin
     private function ajaxPollStatus(): void
     {
         $app     = Factory::getApplication();
+
+        if (!$this->requireAdmin()) {
+            echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+            $app->close(); return;
+        }
+
         $code    = (string) $this->params->get('activation_code', '');
         $expires = (int) $this->params->get('activation_expires', 0);
 
