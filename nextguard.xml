@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<extension type="plugin" group="system" method="upgrade">
+  <name>plg_system_nextguard</name>
+  <author>NextGuard</author>
+  <creationDate>2026</creationDate>
+  <authorUrl>https://nextguardhq.com</authorUrl>
+  <version>1.1.0</version>
+  <description>Syncs installed Joomla extensions to NextGuard for continuous CVE monitoring.</description>
+  <targetplatform name="joomla" version="4\.(.*)" />
+  <targetplatform name="joomla" version="5\.(.*)" />
+  <files>
+    <filename plugin="nextguard">nextguard.php</filename>
+  </files>
+  <config>
+    <fields name="params">
+      <fieldset name="basic">
+        <field
+          name="api_key"
+          type="password"
+          label="API Key"
+          description="Your NextGuard API key. Requires Starter plan or higher."
+          default=""
+        />
+        <field
+          name="project_id"
+          type="text"
+          label="Project ID"
+          description="Auto-filled after Device Auth authorization."
+          default=""
+        />
+        <field
+          name="token"
+          type="text"
+          label="Device Token"
+          description="Auto-filled after Device Auth authorization. Do not edit manually."
+          default=""
+        />
+        <field
+          name="project_name"
+          type="text"
+          label="Project Name"
+          description="Auto-filled after Device Auth authorization."
+          default=""
+        />
+      </fieldset>
+    </fields>
+  </config>
+</extension>
