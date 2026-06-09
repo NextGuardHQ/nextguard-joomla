@@ -8,6 +8,7 @@ use Joomla\CMS\Http\HttpFactory;
 use Joomla\CMS\Language\Text;
 use Joomla\CMS\Uri\Uri;
 use Joomla\CMS\Version;
+use Joomla\Database\DatabaseInterface;
 
 /**
  * NextGuard Security Scanner — Joomla System Plugin
@@ -224,7 +225,7 @@ class PlgSystemNextguard extends CMSPlugin
         if (empty($authKey)) return;
         if (!$isAnon && empty($projectId)) return;
 
-        $db    = $this->getDatabase();
+        $db    = Factory::getContainer()->get(DatabaseInterface::class);
         $query = $db->getQuery(true)
             ->select(['name', 'type', 'element', 'manifest_cache', 'enabled'])
             ->from($db->quoteName('#__extensions'))
@@ -375,7 +376,7 @@ class PlgSystemNextguard extends CMSPlugin
      */
     private function saveParams(): void
     {
-        $db    = $this->getDatabase();
+        $db    = Factory::getContainer()->get(DatabaseInterface::class);
         $query = $db->getQuery(true)
             ->update($db->quoteName('#__extensions'))
             ->set($db->quoteName('params') . ' = ' . $db->quote($this->params->toString()))
