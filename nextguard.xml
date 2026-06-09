@@ -4,21 +4,26 @@
   <author>NextGuard</author>
   <creationDate>2026</creationDate>
   <authorUrl>https://nextguardhq.com</authorUrl>
-  <version>1.1.1</version>
+  <version>1.2.0</version>
   <description>Syncs installed Joomla extensions to NextGuard for continuous CVE monitoring.</description>
   <targetplatform name="joomla" version="4\.(.*)" />
   <targetplatform name="joomla" version="5\.(.*)" />
   <files>
     <filename plugin="nextguard">nextguard.php</filename>
+    <folder>fields</folder>
+    <folder>language</folder>
   </files>
+  <languages>
+    <language tag="en-GB">language/en-GB/en-GB.plg_system_nextguard.ini</language>
+  </languages>
   <config>
-    <fields name="params">
+    <fields name="params" addfieldpath="/plugins/system/nextguard/fields">
       <fieldset name="basic">
         <field
           name="api_key"
           type="password"
           label="API Key"
-          description="Your NextGuard API key. Requires Starter plan or higher."
+          description="Your NextGuard API key. Account keys start with vs_pk_; free anonymous keys start with vs_pk_anon_ and scan instantly."
           default=""
         />
         <field
@@ -41,6 +46,17 @@
           label="Project Name"
           description="Auto-filled after Device Auth authorization."
           default=""
+        />
+        <field name="last_preview"    type="hidden" default="" />
+        <field name="register_url"    type="hidden" default="" />
+        <field name="syncs_remaining" type="hidden" default="" />
+        <field name="max_syncs"       type="hidden" default="" />
+        <field name="last_scan"       type="hidden" default="" />
+        <field name="plan_links"      type="hidden" default="" />
+        <field
+          name="panel"
+          type="nextguardpanel"
+          label=""
         />
       </fieldset>
     </fields>

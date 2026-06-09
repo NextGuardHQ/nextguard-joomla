@@ -5,6 +5,7 @@ defined('_JEXEC') || die;
 use Joomla\CMS\Plugin\CMSPlugin;
 use Joomla\CMS\Factory;
 use Joomla\CMS\Http\HttpFactory;
+use Joomla\CMS\Language\Text;
 use Joomla\CMS\Uri\Uri;
 use Joomla\CMS\Version;
 
@@ -107,10 +108,32 @@ class PlgSystemNextguard extends CMSPlugin
             $app->close(); return;
         }
 
+        // Anonymous Live Scan keys (vs_pk_anon_) skip the Device Authorization
+        // Flow: there is no account to approve a code in. We persist the key,
+        // sync immediately — the server binds the data to the ephemeral project
+        // behind the key and returns the teaser preview — and report success so
+        // the admin page can render the vulnerability table.
+        if (strpos($apiKey, 'vs_pk_anon_') === 0) {
+            $this->params->set('api_key',       $apiKey);
+            $this->params->set('token',         '');
+            $this->params->set('project_id',    '');
+            $this->params->set('project_name',  '');
+            $this->saveParams();
+
+            $this->doSync();
+
+            echo json_encode([
+                'success' => true,
+                'anon'    => true,
+                'message' => 'Free scan complete — see the results below.',
+            ]);
+            $app->close(); return;
+        }
+
         $http = HttpFactory::getHttp();
         try {
             $response = $http->post(
-                'https://nextguardhq.com/api/v1/auth/activate',
+                (getenv('NEXTGUARD_API_BASE') ?: 'https://nextguardhq.com') . '/api/v1/auth/activate',
                 '{}',
                 ['Content-Type' => 'application/json', 'X-API-Key' => $apiKey],
                 15
@@ -159,7 +182,7 @@ class PlgSystemNextguard extends CMSPlugin
         $http = HttpFactory::getHttp();
         try {
             $response = $http->get(
-                'https://nextguardhq.com/api/v1/auth/activate?code=' . urlencode($code),
+                (getenv('NEXTGUARD_API_BASE') ?: 'https://nextguardhq.com') . '/api/v1/auth/activate?code=' . urlencode($code),
                 [],
                 10
             );
@@ -194,8 +217,12 @@ class PlgSystemNextguard extends CMSPlugin
     {
         $authKey   = $this->effectiveKey();
         $projectId = trim((string) $this->params->get('project_id', ''));
+        $isAnon    = strpos($authKey, 'vs_pk_anon_') === 0;
 
-        if (empty($authKey) || empty($projectId)) return;
+        // Account keys require a bound project; anonymous keys do not (the server
+        // binds the data to the ephemeral project behind the key).
+        if (empty($authKey)) return;
+        if (!$isAnon && empty($projectId)) return;
 
         $db    = $this->getDatabase();
         $query = $db->getQuery(true)
@@ -242,19 +269,105 @@ class PlgSystemNextguard extends CMSPlugin
             $sigPayload  = "{$timestamp}\nPOST\n{$urlPath}\n{$bodyHash}";
             $signature   = 'sha256=' . hash_hmac('sha256', $sigPayload, $authKey);
 
-            $http = HttpFactory::getHttp();
-            $http->post('https://nextguardhq.com/api/v1/cms/sync', $payload, [
+            $http     = HttpFactory::getHttp();
+            $response = $http->post((getenv('NEXTGUARD_API_BASE') ?: 'https://nextguardhq.com') . '/api/v1/cms/sync', $payload, [
                 'Content-Type'   => 'application/json',
                 'X-API-Key'      => $authKey,
                 'X-NG-Timestamp' => (string) $timestamp,
                 'X-NG-Signature' => $signature,
-            ], 10);
+            ], 45);
 
             $this->params->set('last_sync', time());
+
+            // Capture the teaser preview (anonymous keys return it) so the admin
+            // page can render the vulnerability table + register CTA, mirroring
+            // the WordPress and Drupal plugins.
+            $data = json_decode($response->body, true);
+            if ($isAnon && is_array($data) && isset($data['preview'])) {
+                $this->params->set('last_preview',     json_encode($data['preview']));
+                $this->params->set('register_url',     $data['registerUrl'] ?? 'https://nextguardhq.com/register');
+                $this->params->set('syncs_remaining',  isset($data['syncsRemaining']) ? (int) $data['syncsRemaining'] : '');
+                $this->params->set('max_syncs',        isset($data['maxSyncs']) ? (int) $data['maxSyncs'] : '');
+                $this->params->set('last_scan',        !empty($data['scannedAt']) ? $data['scannedAt'] : date('c'));
+                if (!empty($data['plans']) && is_array($data['plans'])) {
+                    $this->params->set('plan_links', json_encode($data['plans']));
+                }
+            }
+
             $this->saveParams();
         } catch (\Exception $e) {
             Factory::getApplication()->enqueueMessage('NextGuard sync error: ' . $e->getMessage(), 'error');
         }
+    }
+
+    /**
+     * Loads the live plan catalog from the dashboard (Free/Monitoring/Starter),
+     * cached for an hour in the Joomla cache. Falls back to a static set if the
+     * endpoint is unreachable. Single source of truth shared with the website
+     * pricing and the other plugins.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public static function fetchPlans(): array
+    {
+        $base   = rtrim(getenv('NEXTGUARD_API_BASE') ?: 'https://nextguardhq.com', '/');
+        $lang   = Factory::getApplication()->getLanguage()->getTag() ?: 'en-GB';
+        $locale = str_replace('-', '_', $lang);
+        $cacheId = 'plans_' . substr(md5($base . '|' . $locale), 0, 12);
+
+        $cache = Factory::getCache('plg_system_nextguard', '');
+        $cache->setCaching(true);
+        $cache->setLifeTime(60); // minutes
+        $cached = $cache->get($cacheId);
+        if (is_array($cached) && !empty($cached)) {
+            return $cached;
+        }
+
+        try {
+            $http = HttpFactory::getHttp();
+            $url  = $base . '/api/public/plans?keys=free,monitoring,starter&locale=' . rawurlencode($locale);
+            $resp = $http->get($url, ['ngrok-skip-browser-warning' => '1'], 8);
+            if ((int) $resp->code === 200) {
+                $data = json_decode($resp->body, true);
+                if (is_array($data) && !empty($data['plans']) && is_array($data['plans'])) {
+                    $cache->store($data['plans'], $cacheId);
+                    return $data['plans'];
+                }
+            }
+        } catch (\Exception $e) {
+            // Fall through to the static fallback below.
+        }
+
+        // Fallback (endpoint unreachable) — static set, still localized.
+        return [
+            [
+                'key' => 'free', 'name' => Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_FREE'), 'priceDisplay' => '$0', 'period' => '',
+                'href' => $base . '/register', 'cta' => Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_FREE_CTA'), 'highlighted' => false,
+                'features' => [
+                    Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_FREE_F1'),
+                    Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_FREE_F2'),
+                    Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_FREE_F3'),
+                ],
+            ],
+            [
+                'key' => 'monitoring', 'name' => Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_MONITORING'), 'priceDisplay' => '$3', 'period' => '/mo',
+                'href' => $base . '/checkout/monitoring', 'cta' => Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_MONITORING_CTA'), 'highlighted' => true,
+                'features' => [
+                    Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_MONITORING_F1'),
+                    Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_MONITORING_F2'),
+                    Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_MONITORING_F3'),
+                ],
+            ],
+            [
+                'key' => 'starter', 'name' => Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_STARTER'), 'priceDisplay' => '$7', 'period' => '/mo',
+                'href' => $base . '/checkout/starter', 'cta' => Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_STARTER_CTA'), 'highlighted' => false,
+                'features' => [
+                    Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_STARTER_F1'),
+                    Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_STARTER_F2'),
+                    Text::_('PLG_SYSTEM_NEXTGUARD_PLAN_STARTER_F3'),
+                ],
+            ],
+        ];
     }
 
     /**
